@@ -31,21 +31,21 @@ class Settings(BaseSettings):
     # Trader Profile Configurations
     TRADER_PROFILES: dict = {
         "conservative": {
-            "max_risk_per_trade": 0.01,  # 1% of capital
+            "max_risk_per_trade": 0.005,  # 0.5% of capital
             "max_leverage": 2.0,
             "volatility_tolerance": "low",
             "profit_target_multiplier": 1.5,
             "max_drawdown": 0.05  # 5%
         },
         "balanced": {
-            "max_risk_per_trade": 0.02,  # 2% of capital
+            "max_risk_per_trade": 0.01,  # 1.0% of capital
             "max_leverage": 5.0,
             "volatility_tolerance": "medium",
             "profit_target_multiplier": 2.0,
             "max_drawdown": 0.10  # 10%
         },
         "aggressive": {
-            "max_risk_per_trade": 0.05,  # 5% of capital
+            "max_risk_per_trade": 0.03,  # 3.0% of capital
             "max_leverage": 10.0,
             "volatility_tolerance": "high",
             "profit_target_multiplier": 3.0,

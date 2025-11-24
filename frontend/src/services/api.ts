@@ -6,20 +6,6 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-export interface TradeRecommendation {
-    action: string;
-    pair: string;
-    entry_price: number;
-    position_size: number;
-    stop_loss: number;
-    take_profit: number;
-    leverage: number;
-    expected_profit: number;
-    risk_reward_ratio: number;
-    confidence_score: number;
-    reasoning: string;
-}
-
 export interface TrendForecast {
     direction: string;
     confidence: number;
@@ -30,39 +16,50 @@ export interface TrendForecast {
     uncertainty_score: number;
 }
 
-export interface RiskConstraints {
-    max_position_size: number;
-    stop_loss: number;
-    take_profit: number;
-    leverage: number;
-    risk_amount: number;
+export interface RiskAnalysis {
     is_valid: boolean;
+    max_position_size: number;
+    risk_amount: number;
     constraint_violations: string[];
 }
 
-export interface TradeResponse {
-    recommendation: TradeRecommendation;
-    trend_forecast: TrendForecast;
-    risk_constraints: RiskConstraints;
+export interface Strategy {
+    action: string;
+    entry_price: number;
+    position_size: number;
+    stop_loss: number;
+    take_profit: number;
+    leverage: number;
+    expected_profit: number;
+    risk_reward_ratio: number;
+    confidence_score: number;
+}
+
+export interface FinalRecommendation {
+    action: string;
+    pair: string;
+    trader_profile: string;
     timestamp: string;
 }
 
 export interface MarketData {
     pair: string;
     current_price: number;
-    timestamp: string;
-    indicators: {
-        returns: number;
-        volatility: number;
-        sma_20: number;
-        sma_50: number;
-        rsi?: number;
-        atr?: number;
-    };
+    volatility: number;
+}
+
+// New unified response from orchestrator
+export interface TradeResponse {
+    trend: TrendForecast;
+    strategy: Strategy;
+    risk_analysis: RiskAnalysis;
+    final_recommendation: FinalRecommendation;
+    explanation: string;
+    market_data: MarketData;
 }
 
 /**
- * Get trade recommendation from AI
+ * Get trade recommendation from AI orchestrator
  */
 export async function getTradeRecommendation(
     pair: string,
@@ -70,7 +67,7 @@ export async function getTradeRecommendation(
     capital: number = 10000
 ): Promise<TradeResponse> {
     const response = await fetch(
-        `${API_BASE_URL}/api/recommend_trade?pair=${pair}&trader_profile=${traderProfile}&capital=${capital}`
+        `${API_BASE_URL}/api/recommend_trade?pair=${pair}&profile=${traderProfile}&capital=${capital}`
     );
 
     if (!response.ok) {
@@ -142,6 +139,68 @@ export async function healthCheck() {
 
     if (!response.ok) {
         throw new Error('API health check failed');
+    }
+
+    return response.json();
+}
+
+// Historical Data Interfaces
+export interface MarketState {
+    pair: string;
+    as_of_date: string;
+    window_size: number;
+    prices: number[];
+    returns: number[];
+    volatility_20d: number | null;
+    sma_short: number | null;
+    sma_long: number | null;
+    data_points: number;
+}
+
+export interface TrendAnalysisResponse {
+    pair: string;
+    as_of_date: string;
+    trend_up_prob: number;
+    trend_down_prob: number;
+    volatility: number;
+    explanation: string;
+}
+
+/**
+ * Get historical market state
+ */
+export async function getHistoricalState(
+    pair: string,
+    date: string,
+    windowSize: number = 60
+): Promise<MarketState> {
+    const response = await fetch(
+        `${API_BASE_URL}/api/historical_state?pair=${pair}&date=${date}&window_size=${windowSize}`
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to get historical market state');
+    }
+
+    return response.json();
+}
+
+/**
+ * Get historical trend analysis
+ */
+export async function getTrendAnalysis(
+    pair: string,
+    date: string,
+    windowSize: number = 60
+): Promise<TrendAnalysisResponse> {
+    const response = await fetch(
+        `${API_BASE_URL}/api/trend_analysis?pair=${pair}&date=${date}&window_size=${windowSize}`
+    );
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to get trend analysis');
     }
 
     return response.json();

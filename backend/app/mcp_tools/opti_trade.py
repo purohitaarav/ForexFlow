@@ -6,14 +6,15 @@ given market state, trend forecasts, and risk constraints.
 
 Classical AI Concepts:
 - State space search
-- Greedy best-first search
-- Beam search
-- Heuristic evaluation functions
+- Beam search with multi-depth exploration
+- Trader-profile-specific heuristic evaluation functions
+- Reasoning trace generation
 """
 import numpy as np
+import time
 from typing import List, Dict, Optional, Tuple, Any
-from dataclasses import dataclass
-from app.models.trade import TradeRecommendation, TradeAction, Portfolio
+from dataclasses import dataclass, field
+from app.models.trade import TradeRecommendation, TradeAction, Portfolio, TraderProfile
 from app.models.market import MarketState, TrendForecast
 from app.models.trade import RiskConstraints
 from app.core.config import settings
@@ -28,8 +29,11 @@ class SearchState:
     stop_loss: float
     take_profit: float
     leverage: float
+    portfolio_state: Dict[str, Any] = field(default_factory=dict)
     score: float = 0.0
+    depth: int = 0
     parent: Optional['SearchState'] = None
+    reasoning: str = ""
 
 
 class OptiTradeTool:
@@ -37,47 +41,56 @@ class OptiTradeTool:
     MCP Tool for search-based trade optimization
     
     State Space:
-    - Current market conditions
-    - Portfolio state
-    - Possible trade actions
+    - Portfolio state + recent market state
+    - Possible trade actions with parameters
     
     Actions:
-    - BUY with various parameters
-    - SELL with various parameters
-    - HOLD (no action)
-    - CLOSE existing positions
+    - open_trade (BUY/SELL with size/SL/TP)
+    - close_trade (close existing position)
+    - adjust_size (modify position size)
     
     Search Algorithm:
-    - Beam search to explore multiple candidate strategies
-    - Greedy best-first for quick optimization
-    - Heuristic evaluation based on expected profit and risk
+    - Beam search with configurable width and depth
+    - Trader-profile-specific heuristics
+    - Reasoning trace for explainability
     """
     
-    def __init__(self):
+    def __init__(self, trader_profile: TraderProfile = TraderProfile.BALANCED):
         self.name = "opti_trade"
         self.description = "Search-based trade strategy optimization"
         self.beam_width = settings.SEARCH_BEAM_WIDTH
         self.max_depth = settings.SEARCH_MAX_DEPTH
+        self.trader_profile = trader_profile
+        self.explored_states: List[SearchState] = []
+        self.reasoning_trace: List[str] = []
         
     def optimize(
         self,
         market_state: MarketState,
         trend_forecast: TrendForecast,
         risk_constraints: RiskConstraints,
-        portfolio: Portfolio
+        portfolio: Portfolio,
+        trader_profile: TraderProfile = TraderProfile.BALANCED
     ) -> TradeRecommendation:
         """
-        Find optimal trade recommendation using search
+        Find optimal trade recommendation using beam search
         
         Args:
             market_state: Current market state
             trend_forecast: Probabilistic trend forecast
             risk_constraints: Validated risk parameters
             portfolio: Current portfolio state
+            trader_profile: Trader risk profile for heuristic tuning
             
         Returns:
-            TradeRecommendation with optimal strategy
+            TradeRecommendation with optimal strategy and reasoning trace
         """
+        self.trader_profile = trader_profile
+        self.explored_states = []
+        self.reasoning_trace = []
+        
+        start_time = time.time()
+        
         # Check if risk constraints are valid
         if not risk_constraints.is_valid:
             return self._create_hold_recommendation(
@@ -87,13 +100,19 @@ class OptiTradeTool:
         
         # Generate initial states (possible actions)
         initial_states = self._generate_initial_states(
-            market_state, trend_forecast, risk_constraints
+            market_state, trend_forecast, risk_constraints, portfolio
         )
+        
+        self.reasoning_trace.append(f"Generated {len(initial_states)} initial candidate states")
         
         # Run beam search to find optimal strategy
         best_state = self._beam_search(
-            initial_states, market_state, trend_forecast, portfolio
+            initial_states, market_state, trend_forecast, portfolio, risk_constraints
         )
+        
+        execution_time = (time.time() - start_time) * 1000  # ms
+        self.reasoning_trace.append(f"Search completed in {execution_time:.2f}ms")
+        self.reasoning_trace.append(f"Best state score: {best_state.score:.4f}")
         
         # Convert best state to trade recommendation
         return self._state_to_recommendation(
@@ -104,47 +123,66 @@ class OptiTradeTool:
         self,
         market_state: MarketState,
         trend_forecast: TrendForecast,
-        risk_constraints: RiskConstraints
+        risk_constraints: RiskConstraints,
+        portfolio: Portfolio
     ) -> List[SearchState]:
         """
         Generate initial search states (possible actions)
         
-        Based on trend forecast, generate candidate BUY/SELL actions
-        with parameters from risk constraints
+        Actions:
+        - open_trade (BUY): if bullish trend
+        - open_trade (SELL): if bearish trend
+        - HOLD: always available
+        - close_trade: if open positions exist
         """
         states = []
         current_price = market_state.current_price
         
-        # TODO: Generate multiple candidate states with varying parameters
-        # For now, create simple candidates based on trend direction
+        portfolio_dict = {
+            "capital": portfolio.capital,
+            "open_positions": portfolio.open_positions,
+            "total_profit_loss": portfolio.total_profit_loss,
+            "max_drawdown": portfolio.max_drawdown
+        }
         
-        # BUY state (if bullish trend)
-        if trend_forecast.probability_up > 0.4:
-            buy_state = SearchState(
-                action=TradeAction.BUY,
-                entry_price=current_price,
-                position_size=risk_constraints.max_position_size,
-                stop_loss=risk_constraints.stop_loss,
-                take_profit=risk_constraints.take_profit,
-                leverage=risk_constraints.leverage
-            )
-            states.append(buy_state)
+        # Generate multiple BUY states with varying position sizes (if bullish)
+        if trend_forecast.probability_up > 0.3:
+            for size_multiplier in [1.0, 0.75, 0.5]:
+                buy_state = SearchState(
+                    action=TradeAction.BUY,
+                    entry_price=current_price,
+                    position_size=risk_constraints.max_position_size * size_multiplier,
+                    stop_loss=risk_constraints.stop_loss,
+                    take_profit=risk_constraints.take_profit,
+                    leverage=risk_constraints.leverage,
+                    portfolio_state=portfolio_dict.copy(),
+                    depth=0,
+                    reasoning=f"Open BUY position ({size_multiplier*100:.0f}% of max size)"
+                )
+                states.append(buy_state)
         
-        # SELL state (if bearish trend)
-        if trend_forecast.probability_down > 0.4:
+        # Generate multiple SELL states with varying position sizes (if bearish)
+        if trend_forecast.probability_down > 0.3:
             # For SELL, stop loss and take profit are inverted
-            sell_stop_loss = current_price * (1 + 0.02)  # Above entry
-            sell_take_profit = current_price * (1 - 0.04)  # Below entry
+            sl_pct = (risk_constraints.stop_loss - current_price) / current_price
+            tp_pct = (risk_constraints.take_profit - current_price) / current_price
             
-            sell_state = SearchState(
-                action=TradeAction.SELL,
-                entry_price=current_price,
-                position_size=risk_constraints.max_position_size,
-                stop_loss=sell_stop_loss,
-                take_profit=sell_take_profit,
-                leverage=risk_constraints.leverage
-            )
-            states.append(sell_state)
+            sell_stop_loss = current_price * (1 - sl_pct)  # Above entry
+            sell_take_profit = current_price * (1 - tp_pct)  # Below entry
+            
+            for size_multiplier in [1.0, 0.75, 0.5]:
+                sell_state = SearchState(
+                    action=TradeAction.SELL,
+                    entry_price=current_price,
+                    position_size=risk_constraints.max_position_size * size_multiplier,
+                    stop_loss=sell_stop_loss,
+                    take_profit=sell_take_profit,
+                    leverage=risk_constraints.leverage,
+                    portfolio_state=portfolio_dict.copy(),
+                    depth=0,
+                    reasoning=f"Open SELL position ({size_multiplier*100:.0f}% of max size)"
+                )
+                states.append(sell_state)
         
         # HOLD state (always an option)
         hold_state = SearchState(
@@ -153,9 +191,27 @@ class OptiTradeTool:
             position_size=0.0,
             stop_loss=current_price,
             take_profit=current_price,
-            leverage=1.0
+            leverage=1.0,
+            portfolio_state=portfolio_dict.copy(),
+            depth=0,
+            reasoning="Hold current position - no trade"
         )
         states.append(hold_state)
+        
+        # CLOSE state (if there are open positions)
+        if portfolio.open_positions > 0:
+            close_state = SearchState(
+                action=TradeAction.CLOSE,
+                entry_price=current_price,
+                position_size=0.0,
+                stop_loss=current_price,
+                take_profit=current_price,
+                leverage=1.0,
+                portfolio_state=portfolio_dict.copy(),
+                depth=0,
+                reasoning="Close existing positions"
+            )
+            states.append(close_state)
         
         return states
     
@@ -164,28 +220,59 @@ class OptiTradeTool:
         initial_states: List[SearchState],
         market_state: MarketState,
         trend_forecast: TrendForecast,
-        portfolio: Portfolio
+        portfolio: Portfolio,
+        risk_constraints: RiskConstraints
     ) -> SearchState:
         """
         Beam search to find optimal trade strategy
         
         Maintains top-k candidates at each level and explores their successors
         """
-        # TODO: Implement full beam search with multiple depth levels
-        # For now, use single-level greedy selection
+        # Current beam (top-k states)
+        beam = initial_states
         
         # Evaluate all initial states
-        for state in initial_states:
+        for state in beam:
             state.score = self._evaluate_state(
                 state, market_state, trend_forecast, portfolio
             )
+            self.explored_states.append(state)
         
-        # Sort by score (descending)
-        initial_states.sort(key=lambda s: s.score, reverse=True)
+        # Sort by score (descending) and keep top beam_width
+        beam.sort(key=lambda s: s.score, reverse=True)
+        beam = beam[:self.beam_width]
         
-        # Return best state
-        if initial_states:
-            return initial_states[0]
+        self.reasoning_trace.append(f"Depth 0: Evaluated {len(initial_states)} states, kept top {len(beam)}")
+        
+        # Iterative deepening up to max_depth
+        for depth in range(1, self.max_depth + 1):
+            # Generate successors for each state in beam
+            successors = []
+            for state in beam:
+                new_states = self._generate_successors(
+                    state, market_state, risk_constraints, depth
+                )
+                successors.extend(new_states)
+            
+            if not successors:
+                break
+            
+            # Evaluate all successors
+            for state in successors:
+                state.score = self._evaluate_state(
+                    state, market_state, trend_forecast, portfolio
+                )
+                self.explored_states.append(state)
+            
+            # Sort and prune to beam width
+            successors.sort(key=lambda s: s.score, reverse=True)
+            beam = successors[:self.beam_width]
+            
+            self.reasoning_trace.append(f"Depth {depth}: Evaluated {len(successors)} states, kept top {len(beam)}")
+        
+        # Return best state from final beam
+        if beam:
+            return beam[0]
         
         # Fallback to HOLD
         return SearchState(
@@ -195,8 +282,49 @@ class OptiTradeTool:
             stop_loss=market_state.current_price,
             take_profit=market_state.current_price,
             leverage=1.0,
-            score=0.0
+            score=0.0,
+            reasoning="Fallback HOLD"
         )
+    
+    def _generate_successors(
+        self,
+        state: SearchState,
+        market_state: MarketState,
+        risk_constraints: RiskConstraints,
+        depth: int
+    ) -> List[SearchState]:
+        """
+        Generate successor states from current state
+        
+        Actions:
+        - adjust_size: Increase/decrease position size
+        - Adjust SL/TP levels
+        """
+        successors = []
+        
+        # If current state is HOLD, no successors (terminal)
+        if state.action == TradeAction.HOLD or state.action == TradeAction.CLOSE:
+            return successors
+        
+        # Adjust position size (±25%)
+        for size_adj in [1.25, 0.75]:
+            new_size = state.position_size * size_adj
+            if new_size <= risk_constraints.max_position_size and new_size >= 100:
+                successor = SearchState(
+                    action=state.action,
+                    entry_price=state.entry_price,
+                    position_size=new_size,
+                    stop_loss=state.stop_loss,
+                    take_profit=state.take_profit,
+                    leverage=state.leverage,
+                    portfolio_state=state.portfolio_state.copy(),
+                    depth=depth,
+                    parent=state,
+                    reasoning=f"Adjust size to {new_size:.0f} units"
+                )
+                successors.append(successor)
+        
+        return successors
     
     def _evaluate_state(
         self,
@@ -208,15 +336,18 @@ class OptiTradeTool:
         """
         Heuristic evaluation function for search states
         
-        Combines:
-        - Expected profit (from trend forecast)
-        - Risk-reward ratio
-        - Trend confidence
-        - Portfolio constraints
+        Trader-profile-specific:
+        - Conservative: Penalize volatility and drawdown
+        - Balanced: Balance profit and risk
+        - Aggressive: Weight profit highly
         """
         # HOLD action has neutral score
         if state.action == TradeAction.HOLD:
             return 0.0
+        
+        # CLOSE action has small positive score (exit risk)
+        if state.action == TradeAction.CLOSE:
+            return 0.1
         
         # Calculate expected profit
         expected_profit = self._calculate_expected_profit(
@@ -234,14 +365,41 @@ class OptiTradeTool:
         # Confidence score
         confidence = trend_forecast.confidence
         
-        # Combined heuristic score
-        # TODO: Tune weights based on performance
-        score = (
-            0.4 * expected_profit +
-            0.3 * risk_reward +
-            0.2 * trend_alignment +
-            0.1 * confidence
-        )
+        # Volatility penalty (for conservative traders)
+        volatility = market_state.indicators.volatility
+        volatility_penalty = volatility * 10  # Normalize
+        
+        # Drawdown penalty
+        drawdown_penalty = portfolio.max_drawdown
+        
+        # Trader-profile-specific weights
+        if self.trader_profile == TraderProfile.CONSERVATIVE:
+            # Conservative: Penalize volatility and drawdown heavily
+            score = (
+                0.25 * expected_profit +
+                0.35 * risk_reward +
+                0.15 * trend_alignment +
+                0.10 * confidence -
+                0.10 * volatility_penalty -
+                0.05 * drawdown_penalty
+            )
+        elif self.trader_profile == TraderProfile.AGGRESSIVE:
+            # Aggressive: Weight profit highly, ignore volatility
+            score = (
+                0.60 * expected_profit +
+                0.20 * risk_reward +
+                0.15 * trend_alignment +
+                0.05 * confidence
+            )
+        else:  # BALANCED
+            # Balanced: Equal weighting
+            score = (
+                0.35 * expected_profit +
+                0.30 * risk_reward +
+                0.20 * trend_alignment +
+                0.10 * confidence -
+                0.05 * volatility_penalty
+            )
         
         return score
     
@@ -277,7 +435,7 @@ class OptiTradeTool:
     
     def _calculate_risk_reward(self, state: SearchState) -> float:
         """Calculate risk-reward ratio"""
-        if state.action == TradeAction.HOLD:
+        if state.action == TradeAction.HOLD or state.action == TradeAction.CLOSE:
             return 0.0
         
         if state.action == TradeAction.BUY:
@@ -301,7 +459,7 @@ class OptiTradeTool:
         trend_forecast: TrendForecast
     ) -> float:
         """Calculate how well the action aligns with trend forecast"""
-        if state.action == TradeAction.HOLD:
+        if state.action == TradeAction.HOLD or state.action == TradeAction.CLOSE:
             return 0.5  # Neutral
         
         if state.action == TradeAction.BUY:
@@ -319,13 +477,16 @@ class OptiTradeTool:
         # Calculate expected profit
         if state.action == TradeAction.BUY:
             expected_profit = (state.take_profit - state.entry_price) * state.position_size
-            reasoning = f"Bullish trend detected with {trend_forecast.confidence:.1%} confidence"
+            reasoning = f"Bullish trend ({trend_forecast.confidence:.1%} confidence). {state.reasoning}"
         elif state.action == TradeAction.SELL:
             expected_profit = (state.entry_price - state.take_profit) * state.position_size
-            reasoning = f"Bearish trend detected with {trend_forecast.confidence:.1%} confidence"
+            reasoning = f"Bearish trend ({trend_forecast.confidence:.1%} confidence). {state.reasoning}"
         else:
             expected_profit = 0.0
-            reasoning = "No strong trend signal - holding position"
+            reasoning = f"No strong trend signal. {state.reasoning}"
+        
+        # Add reasoning trace
+        reasoning += f"\n\nSearch trace:\n" + "\n".join(self.reasoning_trace)
         
         # Calculate risk-reward ratio
         risk_reward = self._calculate_risk_reward(state)
@@ -339,7 +500,7 @@ class OptiTradeTool:
             take_profit=state.take_profit,
             leverage=state.leverage,
             expected_profit=expected_profit,
-            risk_reward_ratio=risk_reward * 3.0,  # Denormalize
+            risk_reward_ratio=risk_reward * 3.0 if risk_reward > 0 else 0.0,  # Denormalize
             confidence_score=state.score,
             reasoning=reasoning
         )
@@ -366,6 +527,6 @@ class OptiTradeTool:
 
 
 # MCP Tool Interface
-def create_opti_trade_tool() -> OptiTradeTool:
+def create_opti_trade_tool(trader_profile: TraderProfile = TraderProfile.BALANCED) -> OptiTradeTool:
     """Factory function to create OptiTrade tool instance"""
-    return OptiTradeTool()
+    return OptiTradeTool(trader_profile)

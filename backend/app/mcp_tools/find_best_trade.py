@@ -74,97 +74,119 @@ def find_best_trade(input_data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         raise ValueError(f"Invalid input schema: {str(e)}")
     
-    # TODO: Implement search algorithm
-    # For now, return placeholder output
+    # Initialize OptiTrade tool
+    from app.mcp_tools.opti_trade import create_opti_trade_tool
+    from app.models.market import MarketState, TrendForecast, MarketIndicators
+    from app.models.trade import Portfolio, TraderProfile, RiskConstraints
+    from datetime import datetime
     
-    # Extract inputs
-    trend = validated_input.trend_forecast
-    constraints = validated_input.risk_constraints
-    current_price = validated_input.current_price
+    # Determine trader profile
+    try:
+        trader_profile = TraderProfile(validated_input.portfolio.get("trader_profile", "balanced").lower())
+    except (ValueError, AttributeError):
+        trader_profile = TraderProfile.BALANCED
     
-    # Placeholder logic (to be replaced)
-    # Simple decision based on trend direction
-    if not constraints.is_valid:
-        # If constraints not satisfied, recommend HOLD
-        action = TradeActionEnum.HOLD
-        position_size = 0.0
-        expected_profit = 0.0
-        confidence = 0.0
-        reasoning = "[PLACEHOLDER] Constraints not satisfied - holding position"
-    elif trend.direction == "bullish" and trend.confidence > 0.6:
-        action = TradeActionEnum.BUY
-        position_size = constraints.max_position_size
-        expected_profit = (constraints.take_profit - current_price) * position_size
-        confidence = trend.confidence
-        reasoning = f"[PLACEHOLDER] Bullish trend with {trend.confidence:.1%} confidence - recommending BUY"
-    elif trend.direction == "bearish" and trend.confidence > 0.6:
-        action = TradeActionEnum.SELL
-        position_size = constraints.max_position_size
-        expected_profit = (current_price - constraints.take_profit) * position_size
-        confidence = trend.confidence
-        reasoning = f"[PLACEHOLDER] Bearish trend with {trend.confidence:.1%} confidence - recommending SELL"
-    else:
-        action = TradeActionEnum.HOLD
-        position_size = 0.0
-        expected_profit = 0.0
-        confidence = 0.5
-        reasoning = "[PLACEHOLDER] No strong trend signal - holding position"
+    opti_trade = create_opti_trade_tool(trader_profile)
     
-    # Calculate risk-reward ratio
-    if action in [TradeActionEnum.BUY, TradeActionEnum.SELL]:
-        risk = abs(current_price - constraints.stop_loss)
-        reward = abs(constraints.take_profit - current_price)
-        risk_reward = reward / risk if risk > 0 else 0.0
-    else:
-        risk_reward = 0.0
+    # Convert input to internal models
+    # MarketState reconstruction
+    indicators = MarketIndicators(
+        returns=validated_input.trend_forecast.expected_move,
+        volatility=validated_input.trend_forecast.uncertainty_score * 0.1,
+        sma_20=0.0,
+        sma_50=0.0,
+        rsi=50.0,
+        atr=0.0
+    )
     
-    # Placeholder search stats
+    market_state = MarketState(
+        pair=validated_input.pair,
+        timestamp=datetime.now(),
+        current_price=validated_input.current_price,
+        historical_data=[],
+        indicators=indicators
+    )
+    
+    # Portfolio reconstruction
+    portfolio = Portfolio(
+        capital=validated_input.portfolio.get("capital", 10000.0),
+        open_positions=validated_input.portfolio.get("open_positions", 0),
+        total_profit_loss=validated_input.portfolio.get("total_profit_loss", 0.0),
+        max_drawdown=validated_input.portfolio.get("max_drawdown", 0.0)
+    )
+    
+    # TrendForecast reconstruction
+    trend_forecast = TrendForecast(
+        direction=validated_input.trend_forecast.direction,
+        confidence=validated_input.trend_forecast.confidence,
+        probability_up=validated_input.trend_forecast.probability_up,
+        probability_down=validated_input.trend_forecast.probability_down,
+        probability_neutral=validated_input.trend_forecast.probability_neutral,
+        expected_move=validated_input.trend_forecast.expected_move,
+        uncertainty_score=validated_input.trend_forecast.uncertainty_score
+    )
+    
+    # RiskConstraints reconstruction
+    risk_constraints = RiskConstraints(
+        max_position_size=validated_input.risk_constraints.max_position_size,
+        stop_loss=validated_input.risk_constraints.stop_loss,
+        take_profit=validated_input.risk_constraints.take_profit,
+        leverage=validated_input.risk_constraints.leverage,
+        risk_amount=validated_input.risk_constraints.risk_amount,
+        is_valid=validated_input.risk_constraints.is_valid,
+        constraint_violations=validated_input.risk_constraints.constraint_violations
+    )
+    
+    # Run OptiTrade
+    import time
+    start_time = time.time()
+    
+    recommendation = opti_trade.optimize(
+        market_state=market_state,
+        trend_forecast=trend_forecast,
+        risk_constraints=risk_constraints,
+        portfolio=portfolio,
+        trader_profile=trader_profile
+    )
+    
+    execution_time = (time.time() - start_time) * 1000  # ms
+    
+    # Convert explored states to SearchStateInfo
+    explored_states = []
+    for state in opti_trade.explored_states[:20]:  # Limit to 20 for output size
+        explored_states.append(SearchStateInfo(
+            action=TradeActionEnum(state.action.value),
+            score=state.score,
+            depth=state.depth,
+            parent_state=None  # Simplified
+        ))
+    
+    # Build search stats
     search_stats = {
-        "states_explored": 10,
-        "beam_width_used": validated_input.search_config.get("beam_width", 5),
-        "max_depth_reached": 1,
-        "execution_time_ms": 25.5
+        "states_explored": len(opti_trade.explored_states),
+        "beam_width_used": opti_trade.beam_width,
+        "max_depth_reached": max([s.depth for s in opti_trade.explored_states]) if opti_trade.explored_states else 0,
+        "execution_time_ms": execution_time
     }
     
-    # Placeholder explored states
-    explored_states = [
-        SearchStateInfo(
-            action=TradeActionEnum.BUY,
-            score=0.75,
-            depth=0,
-            parent_state=None
-        ),
-        SearchStateInfo(
-            action=TradeActionEnum.SELL,
-            score=0.35,
-            depth=0,
-            parent_state=None
-        ),
-        SearchStateInfo(
-            action=TradeActionEnum.HOLD,
-            score=0.50,
-            depth=0,
-            parent_state=None
-        )
-    ]
-    
-    placeholder_output = {
-        "action": action,
-        "entry_price": current_price,
-        "position_size": position_size,
-        "stop_loss": constraints.stop_loss,
-        "take_profit": constraints.take_profit,
-        "leverage": constraints.leverage,
-        "expected_profit": expected_profit,
-        "risk_reward_ratio": risk_reward,
-        "confidence_score": confidence,
-        "reasoning": reasoning,
+    # Build output
+    output_data = {
+        "action": TradeActionEnum(recommendation.action.value),
+        "entry_price": recommendation.entry_price,
+        "position_size": recommendation.position_size,
+        "stop_loss": recommendation.stop_loss,
+        "take_profit": recommendation.take_profit,
+        "leverage": recommendation.leverage,
+        "expected_profit": recommendation.expected_profit,
+        "risk_reward_ratio": recommendation.risk_reward_ratio,
+        "confidence_score": recommendation.confidence_score,
+        "reasoning": recommendation.reasoning,
         "search_stats": search_stats,
         "explored_states": [state.model_dump() for state in explored_states]
     }
     
     # Validate output schema
-    validated_output = FindBestTradeOutput(**placeholder_output)
+    validated_output = FindBestTradeOutput(**output_data)
     
     return validated_output.model_dump()
 

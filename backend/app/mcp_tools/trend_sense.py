@@ -10,8 +10,13 @@ Classical AI Concepts:
 - Uncertainty quantification
 """
 import numpy as np
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, Optional
+from datetime import date
 from app.models.market import MarketState, TrendForecast, TrendDirection
+from app.services.market_state_service import get_market_state_service
+
+logger = logging.getLogger(__name__)
 
 
 class TrendSenseTool:
@@ -25,6 +30,7 @@ class TrendSenseTool:
     def __init__(self):
         self.name = "trend_sense"
         self.description = "Probabilistic reasoning tool for Forex trend forecasting"
+        self.market_state_service = get_market_state_service()
         
     def analyze(self, market_state: MarketState) -> TrendForecast:
         """
@@ -39,26 +45,24 @@ class TrendSenseTool:
         # TODO: Implement full probabilistic reasoning logic
         # Current implementation is a stub
         
-        indicators = market_state.indicators
-        
         # Extract features for probabilistic model
-        returns = indicators.returns
-        volatility = indicators.volatility
-        sma_20 = indicators.sma_20
-        sma_50 = indicators.sma_50
-        current_price = market_state.current_price
+        # Use the indicators computed in MarketState
+        volatility = market_state.volatility_20d if market_state.volatility_20d is not None else 0.01
+        sma_short = market_state.sma_short
+        sma_long = market_state.sma_long
+        current_price = market_state.prices[-1] if market_state.prices else 0.0
         
         # TODO: Implement Bayesian inference
         # For now, use simple heuristics as placeholder
         
         # Calculate trend signals
         trend_signal = self._calculate_trend_signal(
-            current_price, sma_20, sma_50, returns
+            current_price, sma_short, sma_long
         )
         
         # Calculate probabilities using probabilistic model
         probabilities = self._calculate_probabilities(
-            trend_signal, volatility, returns
+            trend_signal, volatility
         )
         
         # Determine dominant direction
@@ -82,33 +86,72 @@ class TrendSenseTool:
             expected_move=expected_move,
             uncertainty_score=uncertainty
         )
+
+    def predict_trend(self, pair: str, as_of_date: date, window_size: int = 60) -> Dict[str, Any]:
+        """
+        Main entrypoint for trend prediction using historical data.
+        
+        Args:
+            pair: Currency pair symbol.
+            as_of_date: Date for prediction.
+            window_size: Historical window size.
+            
+        Returns:
+            Dictionary with trend probabilities and explanation.
+        """
+        # Fetch market state using the service
+        market_state = self.market_state_service.get_market_state(pair, as_of_date, window_size)
+        
+        # Analyze using the internal logic
+        forecast = self.analyze(market_state)
+        
+        # Construct explanation
+        explanation = (
+            f"TrendSense Analysis for {pair} on {as_of_date}:\n"
+            f"Direction: {forecast.direction.value.upper()} (Confidence: {forecast.confidence:.1%})\n"
+            f"Probabilities: Up {forecast.probability_up:.1%}, Down {forecast.probability_down:.1%}, Neutral {forecast.probability_neutral:.1%}\n"
+            f"Volatility (20d): {market_state.volatility_20d:.4f}\n"
+            f"SMA Short ({market_state.sma_short:.4f}) vs SMA Long ({market_state.sma_long:.4f})"
+        )
+        
+        return {
+            "pair": pair,
+            "as_of_date": as_of_date.isoformat(),
+            "trend_up_prob": forecast.probability_up,
+            "trend_down_prob": forecast.probability_down,
+            "volatility": market_state.volatility_20d if market_state.volatility_20d else 0.0,
+            "explanation": explanation
+        }
     
     def _calculate_trend_signal(
         self, 
         price: float, 
-        sma_20: float, 
-        sma_50: float, 
-        returns: float
+        sma_short: Optional[float], 
+        sma_long: Optional[float]
     ) -> float:
         """
-        Calculate trend signal from moving averages and returns
+        Calculate trend signal from moving averages.
         
-        Returns value between -1 (bearish) and +1 (bullish)
+        Returns value between -1 (bearish) and +1 (bullish).
         """
         # TODO: Implement sophisticated probabilistic model
         # Placeholder logic:
         
+        if sma_short is None or sma_long is None or sma_long == 0:
+            return 0.0
+            
         # Moving average crossover signal
-        ma_signal = (sma_20 - sma_50) / sma_50 if sma_50 > 0 else 0
+        # Positive if short > long (Golden Cross logic)
+        ma_signal = (sma_short - sma_long) / sma_long
         
         # Price vs MA signal
-        price_signal = (price - sma_20) / sma_20 if sma_20 > 0 else 0
+        # Positive if price > long MA
+        price_signal = (price - sma_long) / sma_long
         
-        # Returns signal
-        returns_signal = np.tanh(returns * 100)  # Normalize returns
-        
-        # Weighted combination
-        signal = 0.4 * ma_signal + 0.3 * price_signal + 0.3 * returns_signal
+        # Combine signals
+        # Scale factors are heuristic to map typical pct diffs to [-1, 1] range
+        # e.g. 1% diff -> 0.01 * 50 = 0.5 signal strength
+        signal = (ma_signal * 50) + (price_signal * 50)
         
         # Clip to [-1, 1]
         return np.clip(signal, -1.0, 1.0)
@@ -116,42 +159,44 @@ class TrendSenseTool:
     def _calculate_probabilities(
         self, 
         trend_signal: float, 
-        volatility: float, 
-        returns: float
+        volatility: float
     ) -> Dict[str, float]:
         """
-        Calculate probability distribution over trend directions
+        Calculate probability distribution over trend directions.
         
-        Uses probabilistic reasoning to convert signals to probabilities
+        Uses a heuristic Bayesian-style update:
+        - Prior is uniform (0.33, 0.33, 0.33)
+        - Likelihood derived from trend signal strength
+        - Volatility flattens the distribution (increases uncertainty)
         """
         # TODO: Implement Bayesian inference or probabilistic graphical model
         # Placeholder using softmax-like transformation
         
-        # Base probabilities from trend signal
-        if trend_signal > 0.1:
-            # Bullish bias
-            logits = np.array([
-                2.0 * trend_signal,  # up
-                -1.0 * trend_signal,  # down
-                0.5 * (1 - abs(trend_signal))  # neutral
-            ])
-        elif trend_signal < -0.1:
-            # Bearish bias
-            logits = np.array([
-                -1.0 * abs(trend_signal),  # up
-                2.0 * abs(trend_signal),  # down
-                0.5 * (1 - abs(trend_signal))  # neutral
-            ])
-        else:
-            # Neutral bias
-            logits = np.array([0.5, 0.5, 2.0])
+        # Base logits from trend signal
+        # Signal > 0 increases Up, decreases Down
+        # Signal < 0 increases Down, decreases Up
+        # Neutral is favored when signal is weak
         
-        # Adjust for volatility (high volatility increases uncertainty)
-        volatility_factor = 1.0 / (1.0 + volatility * 10)
-        logits = logits * volatility_factor
+        # Heuristic mapping:
+        # Signal = 1.0 -> Strong Bull -> High Up prob
+        # Signal = 0.0 -> Neutral -> High Neutral prob
         
-        # Convert to probabilities using softmax
-        exp_logits = np.exp(logits - np.max(logits))  # Numerical stability
+        # Logits: [Up, Down, Neutral]
+        logits = np.array([
+            2.0 * trend_signal,       # Up
+            -2.0 * trend_signal,      # Down
+            1.0 * (1.0 - abs(trend_signal)) # Neutral
+        ])
+        
+        # Volatility adjustment
+        # Higher volatility reduces confidence in the signal -> flattens logits
+        # Volatility factor: 1.0 (low vol) -> 0.5 (high vol)
+        # Assume typical daily vol is ~0.005 to 0.01. High vol > 0.015
+        vol_factor = 1.0 / (1.0 + volatility * 50)
+        logits = logits * vol_factor
+        
+        # Softmax to get probabilities
+        exp_logits = np.exp(logits - np.max(logits))
         probs = exp_logits / np.sum(exp_logits)
         
         return {
@@ -178,7 +223,7 @@ class TrendSenseTool:
     ) -> float:
         """
         Calculate confidence score based on probability distribution
-        and market volatility
+        and market volatility.
         """
         # Confidence is highest when one probability dominates
         max_prob = max(probabilities.values())
@@ -191,7 +236,7 @@ class TrendSenseTool:
         entropy_confidence = 1.0 - (entropy / max_entropy)
         
         # Volatility penalty (high volatility reduces confidence)
-        volatility_confidence = 1.0 / (1.0 + volatility * 5)
+        volatility_confidence = 1.0 / (1.0 + volatility * 20)
         
         # Combined confidence
         confidence = 0.7 * entropy_confidence + 0.3 * volatility_confidence
@@ -205,23 +250,18 @@ class TrendSenseTool:
         current_price: float
     ) -> float:
         """
-        Calculate expected price movement
-        
-        Uses probability-weighted expected value
+        Calculate expected price movement.
         """
-        # Expected move as percentage
-        expected_pct = (
-            probabilities["up"] * volatility -
-            probabilities["down"] * volatility
-        )
+        # Expected move as percentage, scaled by volatility
+        # If Up prob is high, expected move is positive
+        net_direction = probabilities["up"] - probabilities["down"]
         
-        # Convert to absolute price movement
-        expected_move = expected_pct * current_price
+        # Magnitude depends on volatility (typical daily range)
+        expected_pct = net_direction * volatility
         
-        return float(expected_move)
+        return float(expected_pct * current_price)
 
 
 # MCP Tool Interface
 def create_trend_sense_tool() -> TrendSenseTool:
     """Factory function to create TrendSense tool instance"""
-    return TrendSenseTool()

@@ -45,11 +45,11 @@ class RiskConstraints(BaseModel):
     Output from RiskGuard MCP tool
     CSP-validated trade constraints
     """
-    max_position_size: float = Field(..., gt=0)
+    max_position_size: float = Field(..., ge=0)
     stop_loss: float = Field(..., gt=0)
     take_profit: float = Field(..., gt=0)
-    leverage: float = Field(..., gt=0)
-    risk_amount: float = Field(..., gt=0)
+    leverage: float = Field(..., ge=0)
+    risk_amount: float = Field(..., ge=0)
     is_valid: bool
     constraint_violations: list[str] = Field(default_factory=list)
     
@@ -75,12 +75,12 @@ class TradeRecommendation(BaseModel):
     action: TradeAction
     pair: str
     entry_price: float = Field(..., gt=0)
-    position_size: float = Field(..., gt=0)
+    position_size: float = Field(..., ge=0)
     stop_loss: float = Field(..., gt=0)
     take_profit: float = Field(..., gt=0)
     leverage: float = Field(..., gt=0)
     expected_profit: float
-    risk_reward_ratio: float = Field(..., gt=0)
+    risk_reward_ratio: float = Field(..., ge=0)
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     reasoning: str
     

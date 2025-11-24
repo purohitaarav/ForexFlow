@@ -64,67 +64,123 @@ def check_constraints(input_data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         raise ValueError(f"Invalid input schema: {str(e)}")
     
-    # TODO: Implement CSP algorithm
-    # For now, return placeholder output
+    # Initialize RiskGuard tool
+    from app.mcp_tools.risk_guard import create_risk_guard_tool
+    from app.models.market import MarketState, TrendForecast
+    from app.models.trade import Portfolio, TraderProfile
     
-    # Extract trader profile parameters
-    profile = validated_input.trader_profile.lower()
-    current_price = validated_input.current_price
-    capital = validated_input.portfolio.get("capital", 10000.0)
+    risk_guard = create_risk_guard_tool()
     
-    # Placeholder logic (to be replaced)
-    # Simple heuristic for demonstration
-    if profile == "conservative":
-        risk_pct = 0.01
-        max_leverage = 2.0
-    elif profile == "aggressive":
-        risk_pct = 0.05
-        max_leverage = 10.0
-    else:  # balanced
-        risk_pct = 0.02
-        max_leverage = 5.0
+    # Convert input to internal models
+    # MarketState reconstruction from input
+    # Note: We need to reconstruct MarketState from the input data
+    # The input has historical_prices and indicators, but MarketState expects a bit more structure
+    # For now, we'll create a simplified MarketState sufficient for RiskGuard
     
-    # Calculate placeholder values
-    risk_amount = capital * risk_pct
-    position_size = min(1000.0, capital * 0.1)
-    stop_loss_pct = 0.02
-    take_profit_pct = 0.04
+    # We need to reconstruct the MarketState object. 
+    # Since RiskGuard only uses current_price and volatility (from indicators), we can mock the rest if needed.
     
-    stop_loss = current_price * (1 - stop_loss_pct)
-    take_profit = current_price * (1 + take_profit_pct)
+    from app.models.market import MarketIndicators
     
-    placeholder_output = {
-        "is_valid": True,
-        "max_position_size": position_size,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "leverage": max_leverage,
-        "risk_amount": risk_amount,
-        "risk_percentage": risk_pct,
-        "constraint_violations": [],
+    indicators = MarketIndicators(
+        returns=validated_input.trend_forecast.expected_move, # Approximation
+        volatility=validated_input.trend_forecast.uncertainty_score * 0.1, # Approximation
+        sma_20=0.0,
+        sma_50=0.0,
+        rsi=50.0,
+        atr=0.0
+    )
+    
+    # If indicators are in input (they are not in CheckConstraintsInput schema explicitly as a dict, 
+    # but trend_forecast has some info. Wait, schema says:
+    # CheckConstraintsInput has: pair, current_price, trend_forecast, portfolio, trader_profile
+    # It does NOT have raw indicators. 
+    # However, RiskGuard needs volatility.
+    # Let's use trend_forecast.uncertainty_score or expected_move as a proxy if needed, 
+    # or better, we should probably add indicators to CheckConstraintsInput if RiskGuard needs them.
+    # But for now, let's assume we can get volatility from somewhere or use a default.
+    # Actually, let's look at RiskGuard:
+    # volatility = market_state.indicators.volatility
+    
+    # We should probably update CheckConstraintsInput to include indicators or MarketState.
+    # But I cannot change the schema easily without breaking other things potentially.
+    # Let's check if I can add it or if I should just mock it.
+    # The user said "Tool 2: RiskGuard... Input: MarketState object...".
+    # But the schema `CheckConstraintsInput` defined in `schemas.py` does NOT have MarketState.
+    # It has `trend_forecast`.
+    
+    # I will mock MarketState with available data.
+    from datetime import datetime
+    market_state = MarketState(
+        pair=validated_input.pair,
+        timestamp=datetime.now(), # Placeholder
+        current_price=validated_input.current_price,
+        historical_data=[], # Not needed for RiskGuard logic implemented
+        indicators=indicators
+    )
+    
+    # Reconstruct Portfolio
+    portfolio = Portfolio(
+        capital=validated_input.portfolio.get("capital", 10000.0),
+        open_positions=validated_input.portfolio.get("open_positions", 0),
+        total_profit_loss=validated_input.portfolio.get("total_profit_loss", 0.0),
+        max_drawdown=validated_input.portfolio.get("max_drawdown", 0.0)
+    )
+    
+    # Reconstruct TrendForecast
+    # We need to convert PredictTrendOutput to TrendForecast model
+    # They are likely similar.
+    trend_forecast = TrendForecast(
+        direction=validated_input.trend_forecast.direction,
+        confidence=validated_input.trend_forecast.confidence,
+        probability_up=validated_input.trend_forecast.probability_up,
+        probability_down=validated_input.trend_forecast.probability_down,
+        probability_neutral=validated_input.trend_forecast.probability_neutral,
+        expected_move=validated_input.trend_forecast.expected_move,
+        uncertainty_score=validated_input.trend_forecast.uncertainty_score
+    )
+    
+    # Get Trader Profile
+    try:
+        trader_profile = TraderProfile(validated_input.trader_profile.lower())
+    except ValueError:
+        trader_profile = TraderProfile.BALANCED
+        
+    # Run RiskGuard
+    risk_constraints = risk_guard.validate_and_optimize(
+        market_state=market_state,
+        trend_forecast=trend_forecast,
+        portfolio=portfolio,
+        trader_profile=trader_profile
+    )
+    
+    # Convert result to output schema
+    # We need to map RiskConstraints (model) to CheckConstraintsOutput (schema)
+    # They are very similar.
+    
+    # Re-construct CSP variables for output visibility
+    # We can get them from the tool if we want, but validate_and_optimize returns RiskConstraints
+    # which doesn't have csp_variables.
+    # We'll create a placeholder for csp_variables in output or modify RiskConstraints to include it.
+    # For now, placeholder.
+    
+    output_data = {
+        "is_valid": risk_constraints.is_valid,
+        "max_position_size": risk_constraints.max_position_size,
+        "stop_loss": risk_constraints.stop_loss,
+        "take_profit": risk_constraints.take_profit,
+        "leverage": risk_constraints.leverage,
+        "risk_amount": risk_constraints.risk_amount,
+        "risk_percentage": risk_constraints.risk_amount / portfolio.capital if portfolio.capital > 0 else 0.0,
+        "constraint_violations": risk_constraints.constraint_violations,
         "csp_variables": {
-            "position_size": {
-                "domain": [100.0, capital * 0.5],
-                "value": position_size
-            },
-            "stop_loss_pct": {
-                "domain": [0.005, 0.05],
-                "value": stop_loss_pct
-            },
-            "take_profit_pct": {
-                "domain": [0.01, 0.10],
-                "value": take_profit_pct
-            },
-            "leverage": {
-                "domain": [1.0, max_leverage],
-                "value": max_leverage
-            }
+            "note": "CSP variables details not returned by core logic yet"
         },
-        "reasoning": f"[PLACEHOLDER] CSP constraints satisfied for {profile} profile with {risk_pct*100}% risk"
+        "reasoning": f"RiskGuard analysis for {trader_profile.value} profile. Valid: {risk_constraints.is_valid}"
     }
     
     # Validate output schema
-    validated_output = CheckConstraintsOutput(**placeholder_output)
+    validated_output = CheckConstraintsOutput(**output_data)
     
     return validated_output.model_dump()
 

@@ -4,7 +4,7 @@ ForexFlow Backend - FastAPI Application Entry Point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import trades, market, mcp
+from app.routers import trades, market, mcp, recommendations, evaluation, historical
 from app.core.config import settings
 
 # Initialize FastAPI application
@@ -26,6 +26,9 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(recommendations.router)  # Main recommendation endpoint
+app.include_router(evaluation.router)  # Profile evaluation endpoint
+app.include_router(historical.router)  # Historical data endpoints
 app.include_router(trades.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(mcp.router, prefix="/api")
