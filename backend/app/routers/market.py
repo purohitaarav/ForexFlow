@@ -118,30 +118,32 @@ async def get_supported_pairs():
     }
 
 
-@router.get("/quote/{pair}")
+@router.get("/live_quote")
 async def get_live_quote(
-    pair: str,
-    market_service: MarketService = Depends()
+    pair: str = Query(..., description="Forex pair to fetch (e.g. EURUSD)"),
 ):
     """
-    Get live quote for a forex pair
+    Get live quote for a forex pair.
     
-    TODO: Implement live quote fetching
-    - Connect to real-time data source
-    - Return bid/ask prices
-    - Include spread information
-    
-    Args:
-        pair: Forex currency pair
-        
-    Returns:
-        Live quote with bid/ask prices
+    Fetches real-time data from the configured Forex API provider.
+    Falls back to historical/mock data if API is unavailable.
     """
-    # TODO: Implement live quotes
-    raise HTTPException(
-        status_code=501,
-        detail="Live quotes not yet implemented"
-    )
+    from app.services.forex_api_service import get_forex_api_service
+    
+    try:
+        service = get_forex_api_service()
+        quote = await service.get_quote(pair)
+        return quote
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching quote: {str(e)}"
+        )
 
 
 @router.get("/volatility/{pair}")
@@ -171,3 +173,42 @@ async def get_volatility_analysis(
         status_code=501,
         detail="Volatility analysis not yet implemented"
     )
+
+
+@router.get("/test_live_quote")
+async def test_live_quote(
+    pair: str = Query("EURUSD", description="Forex pair to fetch")
+):
+    """
+    Test endpoint for live forex quote fetching
+    
+    Tests the forex API service with caching and error handling.
+    
+    Args:
+        pair: Forex currency pair (e.g., EURUSD)
+        
+    Returns:
+        Live quote data with bid/ask/spread
+    """
+    from app.services.forex_api import get_forex_service
+    
+    try:
+        forex_service = get_forex_service()
+        quote = await forex_service.fetch_live_quote(pair)
+        
+        return {
+            "success": True,
+            "data": quote,
+            "cached": False  # TODO: Add cache hit indicator
+        }
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid request: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching live quote: {str(e)}"
+        )
+

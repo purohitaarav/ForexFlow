@@ -96,6 +96,19 @@ export async function getMarketData(pair: string): Promise<MarketData> {
 }
 
 /**
+ * Get live quote for a pair
+ */
+export async function getLiveQuote(pair: string) {
+    const response = await fetch(`${API_BASE_URL}/api/market/test_live_quote?pair=${pair}`);
+
+    if (!response.ok) {
+        throw new Error('Failed to get live quote');
+    }
+
+    return response.json();
+}
+
+/**
  * Get trader profiles
  */
 export async function getTraderProfiles() {

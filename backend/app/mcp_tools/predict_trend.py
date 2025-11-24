@@ -1,21 +1,33 @@
 """
 MCP Tool: predict_trend (TrendSense)
 
-Placeholder implementation with JSON schema validation.
-Uses probabilistic reasoning to forecast market trends.
-
-Algorithm: NOT IMPLEMENTED YET
+Real implementation with Bayesian probabilistic reasoning.
+Uses feature extraction and Bayesian inference for trend forecasting.
 """
 from typing import Dict, Any
 import time
 from app.mcp_tools.schemas import PredictTrendInput, PredictTrendOutput, TrendDirection
+from app.services.probabilistic.bayesian_forecaster import BayesianTrendForecaster
+from app.models.market import MarketState, OHLCV, MarketIndicators
+from datetime import datetime
+
+
+# Initialize forecaster (singleton)
+_forecaster = None
+
+def get_forecaster() -> BayesianTrendForecaster:
+    """Get or create Bayesian forecaster instance"""
+    global _forecaster
+    if _forecaster is None:
+        _forecaster = BayesianTrendForecaster()
+    return _forecaster
 
 
 def predict_trend(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     MCP Tool: predict_trend
     
-    Analyzes market data using probabilistic reasoning to forecast trends.
+    Analyzes market data using Bayesian probabilistic reasoning to forecast trends.
     
     Input Schema: PredictTrendInput
     - pair: Forex currency pair
@@ -34,9 +46,9 @@ def predict_trend(input_data: Dict[str, Any]) -> Dict[str, Any]:
     - uncertainty_score: Uncertainty in prediction
     - reasoning: Human-readable explanation
     
-    Algorithm (NOT IMPLEMENTED):
-    1. Extract features from historical prices
-    2. Calculate trend signals from indicators
+    Algorithm:
+    1. Extract features from historical prices and indicators
+    2. Calculate likelihood of each trend using weighted features
     3. Apply Bayesian inference for probability distribution
     4. Compute uncertainty using entropy
     5. Determine dominant direction
@@ -57,25 +69,80 @@ def predict_trend(input_data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         raise ValueError(f"Invalid input schema: {str(e)}")
     
-    # TODO: Implement probabilistic reasoning algorithm
-    # For now, return placeholder output
+    # Convert input to MarketState
+    market_state = _convert_to_market_state(validated_input)
     
-    # Placeholder logic (to be replaced)
-    placeholder_output = {
-        "direction": TrendDirection.BULLISH,
-        "confidence": 0.70,
-        "probability_up": 0.60,
-        "probability_down": 0.25,
-        "probability_neutral": 0.15,
-        "expected_move": 0.0020,
-        "uncertainty_score": 0.30,
-        "reasoning": f"[PLACEHOLDER] Trend analysis for {validated_input.pair} based on indicators"
+    # Get forecaster and generate forecast
+    forecaster = get_forecaster()
+    forecast_result = forecaster.forecast(market_state)
+    
+    # Map to output schema
+    output = {
+        "direction": TrendDirection(forecast_result['direction']),
+        "confidence": forecast_result['confidence'],
+        "probability_up": forecast_result['probability_up'],
+        "probability_down": forecast_result['probability_down'],
+        "probability_neutral": forecast_result['probability_neutral'],
+        "expected_move": forecast_result['expected_move'],
+        "uncertainty_score": forecast_result['uncertainty_score'],
+        "reasoning": forecast_result['explanation']
     }
     
     # Validate output schema
-    validated_output = PredictTrendOutput(**placeholder_output)
+    validated_output = PredictTrendOutput(**output)
     
     return validated_output.model_dump()
+
+
+def _convert_to_market_state(input_data: PredictTrendInput) -> MarketState:
+    """
+    Convert PredictTrendInput to MarketState
+    
+    Args:
+        input_data: Validated input data
+        
+    Returns:
+        MarketState object
+    """
+    # Create OHLCV candles from historical prices
+    # (Simplified: using close prices as OHLC)
+    historical_data = []
+    for i, price in enumerate(input_data.historical_prices):
+        # Generate approximate OHLC from close price
+        volatility = input_data.indicators.get('volatility', 0.001)
+        high = price * (1 + volatility * 0.5)
+        low = price * (1 - volatility * 0.5)
+        
+        candle = OHLCV(
+            timestamp=input_data.timestamp,
+            open=price,
+            high=high,
+            low=low,
+            close=price,
+            volume=100000.0  # Placeholder volume
+        )
+        historical_data.append(candle)
+    
+    # Create MarketIndicators
+    indicators = MarketIndicators(
+        returns=input_data.indicators.get('returns', 0.0),
+        volatility=input_data.indicators.get('volatility', 0.0),
+        sma_20=input_data.indicators.get('sma_20', input_data.current_price),
+        sma_50=input_data.indicators.get('sma_50', input_data.current_price),
+        rsi=input_data.indicators.get('rsi', 50.0),
+        atr=input_data.indicators.get('atr', 0.001)
+    )
+    
+    # Create MarketState
+    market_state = MarketState(
+        pair=input_data.pair,
+        current_price=input_data.current_price,
+        timestamp=input_data.timestamp,
+        historical_data=historical_data,
+        indicators=indicators
+    )
+    
+    return market_state
 
 
 def predict_trend_batch(inputs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:

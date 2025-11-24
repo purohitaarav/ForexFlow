@@ -4,8 +4,74 @@ import React, { useState, useEffect } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import MarketChart from '@/components/MarketChart';
 import RecommendationPanel from '@/components/RecommendationPanel';
-import { getTradeRecommendation, type TradeResponse } from '@/services/api';
-import { RefreshCw, TrendingUp } from 'lucide-react';
+import { getTradeRecommendation, getLiveQuote, type TradeResponse } from '@/services/api';
+import { RefreshCw, TrendingUp, ArrowUp, ArrowDown } from 'lucide-react';
+
+function LiveQuotePanel({ pair }: { pair: string }) {
+    const [quote, setQuote] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const fetchQuote = async () => {
+        setLoading(true);
+        try {
+            const result = await getLiveQuote(pair);
+            if (result.success) {
+                setQuote(result.data);
+                setError(null);
+            }
+        } catch (err) {
+            console.error(err);
+            setError('Failed to fetch quote');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchQuote();
+        const interval = setInterval(fetchQuote, 10000); // Refresh every 10s
+        return () => clearInterval(interval);
+    }, [pair]);
+
+    if (!quote) return null;
+
+    return (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4 border border-gray-200 dark:border-gray-700 mb-6">
+            <div className="flex items-center justify-between">
+                <div>
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        {pair} Live Quote
+                        {loading && <RefreshCw className="w-3 h-3 animate-spin text-gray-400" />}
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                        {new Date(quote.timestamp).toLocaleTimeString()}
+                    </p>
+                </div>
+                <div className="flex items-center gap-6">
+                    <div className="text-center">
+                        <p className="text-xs text-gray-500 uppercase">Bid</p>
+                        <p className="text-xl font-mono font-bold text-red-600 dark:text-red-400">
+                            {quote.bid.toFixed(5)}
+                        </p>
+                    </div>
+                    <div className="text-center">
+                        <p className="text-xs text-gray-500 uppercase">Ask</p>
+                        <p className="text-xl font-mono font-bold text-green-600 dark:text-green-400">
+                            {quote.ask.toFixed(5)}
+                        </p>
+                    </div>
+                    <div className="text-center">
+                        <p className="text-xs text-gray-500 uppercase">Spread</p>
+                        <p className="text-sm font-mono font-medium text-gray-700 dark:text-gray-300">
+                            {(quote.spread * 10000).toFixed(1)} pips
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 const FOREX_PAIRS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'NZDUSD', 'USDCHF'];
 const TRADER_PROFILES = ['conservative', 'balanced', 'aggressive'];
@@ -125,6 +191,9 @@ export default function TradingPage() {
                         </div>
                     </div>
                 </div>
+
+                {/* Live Quote Panel */}
+                <LiveQuotePanel pair={selectedPair} />
 
                 {/* Main Content Grid */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
