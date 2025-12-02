@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import date
 from app.models.market import MarketState, TrendForecast, TrendDirection
-from app.services.market_state_service import get_market_state_service
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,6 @@ class TrendSenseTool:
     def __init__(self):
         self.name = "trend_sense"
         self.description = "Probabilistic reasoning tool for Forex trend forecasting"
-        self.market_state_service = get_market_state_service()
         
     def analyze(self, market_state: MarketState) -> TrendForecast:
         """
@@ -42,18 +41,12 @@ class TrendSenseTool:
         Returns:
             TrendForecast with probability distributions and confidence
         """
-        # TODO: Implement full probabilistic reasoning logic
-        # Current implementation is a stub
-        
         # Extract features for probabilistic model
         # Use the indicators computed in MarketState
-        volatility = market_state.volatility_20d if market_state.volatility_20d is not None else 0.01
-        sma_short = market_state.sma_short
-        sma_long = market_state.sma_long
-        current_price = market_state.prices[-1] if market_state.prices else 0.0
-        
-        # TODO: Implement Bayesian inference
-        # For now, use simple heuristics as placeholder
+        volatility = market_state.indicators.volatility if market_state.indicators.volatility is not None else 0.01
+        sma_short = market_state.indicators.sma_20
+        sma_long = market_state.indicators.sma_50
+        current_price = market_state.current_price
         
         # Calculate trend signals
         trend_signal = self._calculate_trend_signal(
@@ -87,39 +80,40 @@ class TrendSenseTool:
             uncertainty_score=uncertainty
         )
 
-    def predict_trend(self, pair: str, as_of_date: date, window_size: int = 60) -> Dict[str, Any]:
+    async def predict_trend(self, pair: str) -> Dict[str, Any]:
         """
         Main entrypoint for trend prediction using historical data.
         
         Args:
             pair: Currency pair symbol.
-            as_of_date: Date for prediction.
-            window_size: Historical window size.
             
         Returns:
             Dictionary with trend probabilities and explanation.
         """
+        from app.services.market_service import MarketService
+        market_service = MarketService()
+        
         # Fetch market state using the service
-        market_state = self.market_state_service.get_market_state(pair, as_of_date, window_size)
+        market_state = await market_service.get_market_state(pair)
         
         # Analyze using the internal logic
         forecast = self.analyze(market_state)
         
         # Construct explanation
         explanation = (
-            f"TrendSense Analysis for {pair} on {as_of_date}:\n"
+            f"TrendSense Analysis for {pair} on {market_state.timestamp}:\n"
             f"Direction: {forecast.direction.value.upper()} (Confidence: {forecast.confidence:.1%})\n"
             f"Probabilities: Up {forecast.probability_up:.1%}, Down {forecast.probability_down:.1%}, Neutral {forecast.probability_neutral:.1%}\n"
-            f"Volatility (20d): {market_state.volatility_20d:.4f}\n"
-            f"SMA Short ({market_state.sma_short:.4f}) vs SMA Long ({market_state.sma_long:.4f})"
+            f"Volatility (20d): {market_state.indicators.volatility:.4f}\n"
+            f"SMA Short ({market_state.indicators.sma_20:.4f}) vs SMA Long ({market_state.indicators.sma_50:.4f})"
         )
         
         return {
             "pair": pair,
-            "as_of_date": as_of_date.isoformat(),
+            "as_of_date": market_state.timestamp.isoformat(),
             "trend_up_prob": forecast.probability_up,
             "trend_down_prob": forecast.probability_down,
-            "volatility": market_state.volatility_20d if market_state.volatility_20d else 0.0,
+            "volatility": market_state.indicators.volatility,
             "explanation": explanation
         }
     
@@ -265,3 +259,4 @@ class TrendSenseTool:
 # MCP Tool Interface
 def create_trend_sense_tool() -> TrendSenseTool:
     """Factory function to create TrendSense tool instance"""
+    return TrendSenseTool()

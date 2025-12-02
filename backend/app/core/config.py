@@ -22,10 +22,6 @@ class Settings(BaseSettings):
     # MCP Tools Configuration
     MCP_TOOLS_ENABLED: bool = True
     
-    # Forex API Configuration
-    FOREX_API_KEY: str = "7M2SH96L7QFUYRJF"
-    FOREX_API_BASE_URL: str = "https://www.alphavantage.co/query"
-    FOREX_CACHE_TTL_SECONDS: int = 10
     DEBUG: bool = True
     
     # Trader Profile Configurations

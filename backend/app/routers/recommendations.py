@@ -2,11 +2,12 @@
 Trade recommendation router
 Handles the main trade recommendation endpoint using MCP orchestration
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional
 from app.models.trade import Portfolio, TraderProfile
 from app.core.orchestrator import orchestrator
 from app.core.config import settings
+from app.services.market_service import MarketService
 
 router = APIRouter(prefix="/api", tags=["recommendations"])
 
@@ -17,6 +18,7 @@ async def recommend_trade(
     profile: str = Query("balanced", description="Trader profile: conservative, balanced, or aggressive"),
     capital: float = Query(10000.0, gt=0, description="Available capital"),
     open_positions: int = Query(0, ge=0, description="Number of open positions"),
+    market_service: MarketService = Depends(),
 ):
     """
     Get AI-powered trade recommendation
@@ -44,8 +46,10 @@ async def recommend_trade(
     Example:
         GET /api/recommend_trade?pair=EURUSD&profile=conservative&capital=10000
     """
+    pair_upper = pair.upper()
+
     # Validate pair
-    if pair.upper() not in settings.FOREX_PAIRS:
+    if pair_upper not in settings.FOREX_PAIRS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported forex pair. Supported pairs: {', '.join(settings.FOREX_PAIRS)}"
@@ -69,9 +73,12 @@ async def recommend_trade(
     )
     
     try:
+        # Fetch market state
+        market_state = await market_service.get_market_state(pair.upper())
+
         # Run MCP orchestration pipeline
         recommendation = await orchestrator.recommend_trade(
-            pair=pair.upper(),
+            market_state=market_state,
             portfolio=portfolio,
             trader_profile=trader_profile
         )
@@ -90,6 +97,7 @@ async def recommend_trade_batch(
     pairs: str = Query(..., description="Comma-separated forex pairs (e.g., EURUSD,GBPUSD)"),
     profile: str = Query("balanced", description="Trader profile"),
     capital: float = Query(10000.0, gt=0, description="Available capital"),
+    market_service: MarketService = Depends(),
 ):
     """
     Get trade recommendations for multiple pairs
@@ -137,14 +145,21 @@ async def recommend_trade_batch(
     
     try:
         # Get recommendations for all pairs
+        # market_service is already injected via Depends()
+        
         recommendations = {}
         for pair in pair_list:
-            recommendation = await orchestrator.recommend_trade(
-                pair=pair,
-                portfolio=portfolio,
-                trader_profile=trader_profile
-            )
-            recommendations[pair] = recommendation
+            try:
+                market_state = await market_service.get_market_state(pair)
+                recommendation = await orchestrator.recommend_trade(
+                    market_state=market_state,
+                    portfolio=portfolio,
+                    trader_profile=trader_profile
+                )
+                recommendations[pair] = recommendation
+            except Exception as e:
+                # Log error and continue with other pairs
+                recommendations[pair] = {"error": str(e)}
         
         return {
             "pairs": pair_list,
