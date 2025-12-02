@@ -4,11 +4,10 @@ Business logic for market data retrieval and analysis
 """
 import numpy as np
 import logging
-from typing import List, Optional
-from datetime import datetime, timedelta
+from typing import List
 
 from app.models.market import MarketState, OHLCV, MarketIndicators
-from app.core.config import settings
+from app.services.historical_data_service import get_historical_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +24,11 @@ class MarketService:
     """
     
     def __init__(self):
-        # TODO: Initialize data source connection
-        # - Alpha Vantage API
-        # - Yahoo Finance
-        # - Database connection
-        pass
+        self._historical_service = get_historical_data_service()
     
     async def get_market_state(self, pair: str) -> MarketState:
         """
-        Get current market state for a forex pair
-        
-        Tries to fetch live data first, falls back to mock data if unavailable.
+        Get current market state for a forex pair using historical CSV data.
         
         Args:
             pair: Forex currency pair
@@ -43,13 +36,46 @@ class MarketService:
         Returns:
             Current market state with indicators
         """
-        try:
-            # Try to fetch live data
-            return await self._get_live_market_state(pair)
-        except Exception as e:
-            logger.warning(f"Failed to fetch live data for {pair}: {e}. Using mock data.")
-            # Fallback to mock data
-            return await self._generate_mock_market_state(pair)
+        from app.services.historical_data_service import get_historical_data_service
+        
+        hist_service = get_historical_data_service()
+        df = hist_service.load_historical_data()
+        
+        # Get history for pair
+        pair_df = hist_service.get_pair_history(df, pair)
+        
+        if pair_df.empty:
+            raise ValueError(f"No historical data found for {pair} in CSV")
+            
+        # Convert to OHLCV
+        # Since CSV only has daily rates, we use the rate for O/H/L/C
+        historical_data = []
+        for date_idx, row in pair_df.iterrows():
+            price = float(row['rate'])
+            candle = OHLCV(
+                timestamp=date_idx,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=0.0
+            )
+            historical_data.append(candle)
+            
+        if len(historical_data) < 50:
+            raise ValueError("Insufficient historical data to compute indicators")
+
+        indicators = await self.calculate_indicators(historical_data)
+
+        latest_candle = historical_data[-1]
+
+        return MarketState(
+            pair=pair,
+            current_price=latest_candle.close,
+            timestamp=latest_candle.timestamp,
+            historical_data=historical_data[-100:], # Keep last 100 candles
+            indicators=indicators
+        )
     
     async def get_historical_data(
         self,
@@ -74,8 +100,12 @@ class MarketService:
         Returns:
             List of OHLCV candles
         """
-        # TODO: Implement real data fetching
-        raise NotImplementedError("Historical data fetching not yet implemented")
+        historical_data = self._load_pair_history(pair)
+
+        if not historical_data:
+            raise ValueError(f"No historical data available for {pair}")
+
+        return historical_data[-limit:]
     
     async def calculate_indicators(
         self,
@@ -186,132 +216,24 @@ class MarketService:
         
         return atr
     
-    
-    async def _get_live_market_state(self, pair: str) -> MarketState:
-        """
-        Get market state from live forex API
-        
-        Args:
-            pair: Forex currency pair
-            
-        Returns:
-            MarketState with live data
-        """
-        from app.services.forex_api import get_forex_service
-        
-        # Get live quote
-        forex_service = get_forex_service()
-        quote = await forex_service.fetch_live_quote(pair)
-        
-        current_price = quote['price']
-        
-        # Generate historical data (simplified - using current price with variations)
-        # In production, you'd fetch actual historical data
-        historical_data = []
-        base_price = current_price
-        
-        for i in range(50):
-            # Generate price variation
-            variation = np.random.uniform(-0.002, 0.002)
-            price = base_price * (1 + variation)
-            
-            candle = OHLCV(
-                timestamp=datetime.now() - timedelta(hours=50-i),
-                open=price,
-                high=price * 1.0005,
-                low=price * 0.9995,
-                close=price,
-                volume=np.random.uniform(100000, 1000000)
-            )
-            historical_data.append(candle)
-            base_price = price
-        
-        # Set last candle to current price
-        historical_data[-1].close = current_price
-        
-        # Calculate indicators
-        indicators = await self.calculate_indicators(historical_data)
-        
-        return MarketState(
-            pair=pair,
-            current_price=current_price,
-            timestamp=datetime.now(),
-            historical_data=historical_data,
-            indicators=indicators
-        )
-    
-    async def _generate_mock_market_state(self, pair: str) -> MarketState:
-        """
-        Generate mock market state for testing
-        
-        TODO: Remove this when real data source is implemented
-        
-        Args:
-            pair: Forex currency pair
-            
-        Returns:
-            Mock market state
-        """
-        # Base prices for different pairs
-        base_prices = {
-            "EURUSD": 1.1000,
-            "GBPUSD": 1.2500,
-            "USDJPY": 110.00,
-            "AUDUSD": 0.7500,
-            "USDCAD": 1.2500,
-            "NZDUSD": 0.7000,
-            "USDCHF": 0.9200
+    async def get_latest_quote(self, pair: str) -> dict:
+        """Return latest quote derived from historical CSV data."""
+        historical_data = self._load_pair_history(pair)
+
+        if not historical_data:
+            raise ValueError(f"No historical data available for {pair}")
+
+        latest = historical_data[-1]
+
+        return {
+            "pair": pair,
+            "timestamp": latest.timestamp,
+            "price": latest.close,
+            "bid": latest.close,
+            "ask": latest.close,
+            "spread": 0.0,
+            "source": "historical_csv"
         }
-        
-        current_price = base_prices.get(pair, 1.0000)
-        current_price *= (1 + np.random.uniform(-0.005, 0.005))
-        
-        # Generate mock historical data
-        historical_data = []
-        price = current_price
-        
-        for i in range(50):
-            change = np.random.uniform(-0.002, 0.002)
-            open_price = price
-            close_price = price * (1 + change)
-            high_price = max(open_price, close_price) * (1 + abs(np.random.uniform(0, 0.001)))
-            low_price = min(open_price, close_price) * (1 - abs(np.random.uniform(0, 0.001)))
-            
-            candle = OHLCV(
-                timestamp=datetime.now() - timedelta(hours=50-i),
-                open=open_price,
-                high=high_price,
-                low=low_price,
-                close=close_price,
-                volume=np.random.uniform(100000, 1000000)
-            )
-            historical_data.append(candle)
-            price = close_price
-        
-        # Calculate indicators
-        indicators = await self.calculate_indicators(historical_data)
-        
-        return MarketState(
-            pair=pair,
-            current_price=current_price,
-            timestamp=datetime.now(),
-            historical_data=historical_data,
-            indicators=indicators
-        )
-    
-    async def get_live_quote(self, pair: str) -> dict:
-        """
-        Get live bid/ask quote
-        
-        Args:
-            pair: Forex currency pair
-            
-        Returns:
-            Live quote with bid/ask
-        """
-        from app.services.forex_api import get_forex_service
-        forex_service = get_forex_service()
-        return await forex_service.fetch_live_quote(pair)
     
     async def get_volatility_metrics(
         self,
@@ -336,3 +258,30 @@ class MarketService:
         """
         # TODO: Implement volatility analysis
         raise NotImplementedError("Volatility analysis not yet implemented")
+
+    def _load_pair_history(self, pair: str) -> List[OHLCV]:
+        """Load historical OHLCV data for a pair from the CSV-backed service."""
+        df = self._historical_service.load_historical_data()
+        pair_df = self._historical_service.get_pair_history(df, pair)
+
+        if pair_df.empty:
+            raise ValueError(f"No historical data found for {pair} in CSV")
+
+        historical_data: List[OHLCV] = []
+        for date_idx, row in pair_df.iterrows():
+            price = float(row['rate'])
+            timestamp = date_idx.to_pydatetime() if hasattr(date_idx, "to_pydatetime") else date_idx
+            candle = OHLCV(
+                timestamp=timestamp,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=0.0
+            )
+            historical_data.append(candle)
+
+        if not historical_data:
+            raise ValueError(f"No data points found for {pair}")
+
+        return historical_data

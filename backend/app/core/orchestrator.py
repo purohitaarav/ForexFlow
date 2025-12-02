@@ -19,7 +19,7 @@ from app.models.trade import (
 from app.mcp_tools.trend_sense import create_trend_sense_tool
 from app.mcp_tools.risk_guard import create_risk_guard_tool
 from app.mcp_tools.opti_trade import create_opti_trade_tool
-from app.services.forex_api import get_forex_service
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -43,82 +43,11 @@ class MCPOrchestrator:
         self.trend_sense = create_trend_sense_tool()
         # RiskGuard and OptiTrade are created per-request with trader profile
         
-    async def fetch_market_state(self, pair: str) -> MarketState:
-        """
-        Fetch live market state or fallback to mock data
-        
-        Args:
-            pair: Forex currency pair
-            
-        Returns:
-            MarketState with current price and indicators
-        """
-        try:
-            # Try to fetch live quote
-            forex_service = get_forex_service()
-            quote = await forex_service.fetch_live_quote(pair)
-            
-            # Create market state from live data
-            # For now, use simple indicators (in production, calculate from historical data)
-            indicators = MarketIndicators(
-                returns=0.001,  # Placeholder
-                volatility=0.008,  # Placeholder
-                sma_20=quote['price'],
-                sma_50=quote['price'] * 0.998,
-                rsi=50.0,
-                atr=quote['spread'] * 10
-            )
-            
-            market_state = MarketState(
-                pair=pair,
-                timestamp=datetime.now(),
-                current_price=quote['price'],
-                historical_data=[],  # Would fetch historical in production
-                indicators=indicators
-            )
-            
-            logger.info(f"Fetched live market state for {pair}: {quote['price']}")
-            return market_state
-            
-        except Exception as e:
-            logger.warning(f"Failed to fetch live data for {pair}: {e}. Using fallback.")
-            return self._create_fallback_market_state(pair)
-    
-    def _create_fallback_market_state(self, pair: str) -> MarketState:
-        """Create fallback market state with mock data"""
-        # Mock data for common pairs
-        mock_prices = {
-            "EURUSD": 1.1000,
-            "GBPUSD": 1.2500,
-            "USDJPY": 110.00,
-            "AUDUSD": 0.7500,
-            "USDCAD": 1.2500,
-            "NZDUSD": 0.7000,
-            "USDCHF": 0.9200
-        }
-        
-        current_price = mock_prices.get(pair, 1.0000)
-        
-        indicators = MarketIndicators(
-            returns=0.001,
-            volatility=0.008,
-            sma_20=current_price,
-            sma_50=current_price * 0.998,
-            rsi=55.0,
-            atr=0.0020
-        )
-        
-        return MarketState(
-            pair=pair,
-            timestamp=datetime.now(),
-            current_price=current_price,
-            historical_data=[],
-            indicators=indicators
-        )
+
         
     async def recommend_trade(
         self,
-        pair: str,
+        market_state: MarketState,
         portfolio: Portfolio,
         trader_profile: TraderProfile
     ) -> Dict[str, Any]:
@@ -126,7 +55,7 @@ class MCPOrchestrator:
         Generate comprehensive trade recommendation
         
         Pipeline:
-        1. Fetch live MarketState (or fallback)
+        1. Receive MarketState
         2. TrendSense → produce trend probabilities
         3. OptiTrade → generate candidate strategies
         4. RiskGuard → validate or reject candidate
@@ -134,15 +63,15 @@ class MCPOrchestrator:
         6. Return unified response
         
         Args:
-            pair: Forex currency pair
+            market_state: Current market state
             portfolio: User portfolio state
             trader_profile: Risk profile (conservative/balanced/aggressive)
             
         Returns:
             Unified response with trend, strategy, risk analysis, and final recommendation
         """
-        # Step 1: Fetch market state
-        market_state = await self.fetch_market_state(pair)
+        pair = market_state.pair
+
         
         # Step 2: Run TrendSense for probabilistic forecast
         trend_forecast = self.trend_sense.analyze(market_state)

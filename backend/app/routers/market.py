@@ -3,10 +3,9 @@ Market data router
 Handles market data and analysis endpoints
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import Optional, List
-from datetime import datetime, timedelta
+from typing import List
 
-from app.models.market import MarketState, OHLCV, MarketIndicators
+from app.models.market import MarketState, OHLCV
 from app.services.market_service import MarketService
 from app.core.config import settings
 
@@ -46,31 +45,26 @@ async def get_market_data(
 @router.get("/historical/{pair}")
 async def get_historical_data(
     pair: str,
-    timeframe: str = Query("1h", description="Timeframe (1m, 5m, 15m, 1h, 4h, 1d)"),
+    timeframe: str = Query("1d", description="Timeframe (currently daily CSV data)"),
     limit: int = Query(100, ge=1, le=1000),
     market_service: MarketService = Depends()
 ) -> List[OHLCV]:
     """
-    Get historical OHLCV data
-    
-    TODO: Implement historical data retrieval
-    - Fetch from data source (Alpha Vantage, Yahoo Finance, etc.)
-    - Support different timeframes
-    - Cache results for performance
-    
-    Args:
-        pair: Forex currency pair
-        timeframe: Candlestick timeframe
-        limit: Number of candles to return
-        
-    Returns:
-        List of OHLCV candles
+    Get historical OHLCV data sourced from the CSV dataset.
     """
-    # TODO: Implement historical data fetching
-    raise HTTPException(
-        status_code=501,
-        detail="Historical data not yet implemented"
-    )
+    if pair not in settings.FOREX_PAIRS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported forex pair. Supported: {settings.FOREX_PAIRS}"
+        )
+
+    try:
+        data = await market_service.get_historical_data(pair, timeframe=timeframe, limit=limit)
+        return data
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching historical data: {str(e)}")
 
 
 @router.get("/indicators/{pair}")
@@ -121,29 +115,22 @@ async def get_supported_pairs():
 @router.get("/live_quote")
 async def get_live_quote(
     pair: str = Query(..., description="Forex pair to fetch (e.g. EURUSD)"),
+    market_service: MarketService = Depends()
 ):
-    """
-    Get live quote for a forex pair.
-    
-    Fetches real-time data from the configured Forex API provider.
-    Falls back to historical/mock data if API is unavailable.
-    """
-    from app.services.forex_api_service import get_forex_api_service
-    
-    try:
-        service = get_forex_api_service()
-        quote = await service.get_quote(pair)
-        return quote
-    except ValueError as e:
+    """Return the most recent quote derived from the historical CSV data."""
+    if pair not in settings.FOREX_PAIRS:
         raise HTTPException(
             status_code=400,
-            detail=str(e)
+            detail=f"Unsupported forex pair. Supported: {settings.FOREX_PAIRS}"
         )
+
+    try:
+        quote = await market_service.get_latest_quote(pair)
+        return quote
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching quote: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error fetching quote: {str(e)}")
 
 
 @router.get("/volatility/{pair}")
@@ -177,38 +164,25 @@ async def get_volatility_analysis(
 
 @router.get("/test_live_quote")
 async def test_live_quote(
-    pair: str = Query("EURUSD", description="Forex pair to fetch")
+    pair: str = Query("EURUSD", description="Forex pair to fetch"),
+    market_service: MarketService = Depends()
 ):
-    """
-    Test endpoint for live forex quote fetching
-    
-    Tests the forex API service with caching and error handling.
-    
-    Args:
-        pair: Forex currency pair (e.g., EURUSD)
-        
-    Returns:
-        Live quote data with bid/ask/spread
-    """
-    from app.services.forex_api import get_forex_service
-    
+    """Test endpoint that returns the latest CSV-derived quote."""
+    if pair not in settings.FOREX_PAIRS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported forex pair. Supported: {settings.FOREX_PAIRS}"
+        )
+
     try:
-        forex_service = get_forex_service()
-        quote = await forex_service.fetch_live_quote(pair)
-        
+        quote = await market_service.get_latest_quote(pair)
         return {
             "success": True,
             "data": quote,
-            "cached": False  # TODO: Add cache hit indicator
+            "cached": True  # Data comes from CSV cache
         }
     except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid request: {str(e)}"
-        )
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching live quote: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error fetching live quote: {str(e)}")
 

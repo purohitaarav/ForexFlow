@@ -8,6 +8,7 @@ import os
 import logging
 from typing import List, Optional, Dict, Union
 from datetime import date, datetime
+
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -27,16 +28,16 @@ class HistoricalDataService:
     def load_historical_data(self) -> pd.DataFrame:
         """
         Load historical data from CSV into a pandas DataFrame.
-        
-        The DataFrame is cached in memory (self._df) to avoid repeated disk I/O.
-        
-        Assumptions:
-        - CSV has a 'Date' column (case-insensitive search for 'date').
-        - Other columns are currency pairs (e.g., 'EURUSD', 'EUR/USD').
-        - Columns will be normalized to uppercase without separators (e.g., 'EUR/USD' -> 'EURUSD').
-        
+
+        The source CSV is structured as long-form records with columns:
+        [currency, base_currency, currency_name, exchange_rate, date].
+
+        During loading we pivot the dataset to obtain a wide DataFrame where each
+        column is a currency (quoted against the base currency, typically EUR)
+        and each row is a date.
+
         Returns:
-            pd.DataFrame: DataFrame containing historical rates with DatetimeIndex.
+            pd.DataFrame: Pivoted DataFrame of currency rates indexed by date.
         """
         if self._df is not None:
             return self._df
@@ -49,33 +50,38 @@ class HistoricalDataService:
         try:
             logger.info(f"Loading historical data from {self.csv_path}")
             df = pd.read_csv(self.csv_path)
-            
-            # Find date column (case-insensitive)
-            date_col = next((col for col in df.columns if col.lower() == 'date'), None)
-            if not date_col:
-                raise ValueError("CSV must contain a 'Date' column")
 
-            # Parse dates
-            df[date_col] = pd.to_datetime(df[date_col])
-            df.set_index(date_col, inplace=True)
-            df.sort_index(inplace=True)
+            # Normalize column names for consistent access
+            df.columns = [col.strip().upper() for col in df.columns]
 
-            # Normalize column names: 'EUR/USD' -> 'EURUSD'
-            # Also ensure numeric types
-            clean_columns = {}
-            for col in df.columns:
-                clean_name = col.upper().replace('/', '').replace('_', '').strip()
-                clean_columns[col] = clean_name
-            
-            df.rename(columns=clean_columns, inplace=True)
-            
-            # Filter to keep only numeric columns (actual rates)
-            # This handles cases where there might be other metadata columns
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            df = df[numeric_cols]
+            required_columns = {"CURRENCY", "BASE_CURRENCY", "EXCHANGE_RATE", "DATE"}
+            if not required_columns.issubset(df.columns):
+                missing = required_columns - set(df.columns)
+                raise ValueError(
+                    "CSV must contain columns: currency, base_currency, exchange_rate, date. "
+                    f"Missing: {', '.join(sorted(missing))}"
+                )
 
-            self._df = df
-            logger.info(f"Successfully loaded {len(df)} rows and {len(df.columns)} pairs.")
+            # Parse dates and ensure chronological order
+            df["DATE"] = pd.to_datetime(df["DATE"])
+            df.sort_values("DATE", inplace=True)
+
+            # Pivot to get one column per currency (quoted vs base currency)
+            pivot = df.pivot_table(
+                index="DATE",
+                columns="CURRENCY",
+                values="EXCHANGE_RATE",
+                aggfunc="last"
+            )
+
+            pivot.sort_index(inplace=True)
+
+            self._df = pivot
+            logger.info(
+                "Successfully loaded %s rows and %s currencies.",
+                len(pivot),
+                len(pivot.columns)
+            )
             return self._df
 
         except Exception as e:
@@ -112,14 +118,29 @@ class HistoricalDataService:
             return pd.DataFrame()
 
         normalized_pair = pair.upper().replace('/', '').strip()
-        
-        if normalized_pair not in df.columns:
-            logger.warning(f"Pair {normalized_pair} not found in historical data.")
+
+        base_currency = normalized_pair[:3]
+        quote_currency = normalized_pair[3:]
+
+        base_series = self._get_currency_series(df, base_currency)
+        quote_series = self._get_currency_series(df, quote_currency)
+
+        if base_series.empty or quote_series.empty:
+            logger.warning(
+                "Unable to compute pair %s: missing currency data (base=%s, quote=%s)",
+                normalized_pair,
+                base_currency,
+                quote_currency
+            )
             return pd.DataFrame()
 
-        # Return as DataFrame with standard 'rate' column
-        pair_data = df[[normalized_pair]].copy()
-        pair_data.columns = ['rate']
+        rate_series = (quote_series / base_series).dropna()
+
+        if rate_series.empty:
+            logger.warning("No overlapping data available for pair %s", normalized_pair)
+            return pd.DataFrame()
+
+        pair_data = rate_series.to_frame(name='rate')
         return pair_data
 
     def get_window(self, df: pd.DataFrame, pair: str, end_date: Union[date, datetime], window_size: int) -> pd.DataFrame:
@@ -154,6 +175,23 @@ class HistoricalDataService:
 
         # Take the last window_size rows
         return filtered_df.tail(window_size)
+
+    def _get_currency_series(self, df: pd.DataFrame, currency: str) -> pd.Series:
+        """Return the time series for a specific currency quoted against the base currency."""
+        if df is None or df.empty:
+            return pd.Series(dtype=float)
+
+        code = currency.upper()
+
+        if code == "EUR":
+            # Base currency is EUR in the historical dataset; return series of ones.
+            return pd.Series(1.0, index=df.index)
+
+        if code not in df.columns:
+            logger.warning("Currency %s not found in historical data.", code)
+            return pd.Series(dtype=float)
+
+        return df[code]
 
 # Singleton instance
 _service_instance = None
